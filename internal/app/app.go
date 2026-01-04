@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sukruozdemir/ema-bot-go/internal/config"
 	"github.com/sukruozdemir/ema-bot-go/internal/errors"
+	"github.com/sukruozdemir/ema-bot-go/internal/export"
 	"github.com/sukruozdemir/ema-bot-go/internal/indicators"
 	"github.com/sukruozdemir/ema-bot-go/internal/input"
 	"github.com/sukruozdemir/ema-bot-go/internal/models"
@@ -388,6 +388,12 @@ func (a *App) processMarkets(ctx context.Context) error {
 	// Add a small buffer so we have some lookback beyond the period
 	requestedCount := 1000
 
+	ui.PrintInfo(fmt.Sprintf("🔄 Starting analysis for %d markets across %d timeframes", len(filteredMarkets), len(a.config.Timeframes)))
+
+	var processedMarkets int
+	var allAnalyses []indicators.MarketAnalysis
+	currentOperation := 0
+
 	// For each filtered market, fetch OHLCV for each timeframe and compute EMAs
 	for _, im := range filteredMarkets {
 		market, ok := im.(models.Market)
@@ -395,7 +401,12 @@ func (a *App) processMarkets(ctx context.Context) error {
 			continue
 		}
 
+		processedMarkets++
+		ui.PrintMarketProgress(market.Symbol, processedMarkets, len(filteredMarkets))
+
 		for _, tf := range a.config.Timeframes {
+			currentOperation++
+
 			// Respect context cancellation
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -426,50 +437,14 @@ func (a *App) processMarkets(ctx context.Context) error {
 				continue
 			}
 
-			// Compute EMAs
-			emaMap := indicators.CalculateMultipleEMAs(closes, a.config.Emas)
+			// Perform comprehensive EMA analysis
+			analysis := indicators.AnalyzeMarket(market.Base, tf, closes, a.config.Emas)
 
-			// Prepare summary: latest valid EMA for each period
-			summaryParts := make([]string, 0, len(a.config.Emas))
+			// Store analysis for export
+			allAnalyses = append(allAnalyses, analysis)
 
-			// Decide precision: prefer market.PricePrecision if available
-			precision := market.PricePrecision
-			latestClose := closes[len(closes)-1]
-			if precision <= 0 {
-				switch {
-				case latestClose >= 1000:
-					precision = 2
-				case latestClose >= 100:
-					precision = 2
-				case latestClose >= 1:
-					precision = 4
-				case latestClose > 0:
-					precision = 6
-				default:
-					precision = 6
-				}
-			}
-			for _, p := range a.config.Emas {
-				emaSeries := emaMap[p]
-				// Find last non-NaN value
-				var latest float64 = math.NaN()
-				for i := len(emaSeries) - 1; i >= 0; i-- {
-					if !math.IsNaN(emaSeries[i]) {
-						latest = emaSeries[i]
-						break
-					}
-				}
-				if math.IsNaN(latest) {
-					summaryParts = append(summaryParts, fmt.Sprintf("%d: n/a", p))
-				} else {
-					valueStr := fmt.Sprintf("%.*f", precision, latest)
-					// Trim trailing zeros and trailing dot
-					valueStr = strings.TrimRight(strings.TrimRight(valueStr, "0"), ".")
-					summaryParts = append(summaryParts, fmt.Sprintf("%d: %s", p, valueStr))
-				}
-			}
-
-			ui.PrintInfo(fmt.Sprintf("%s %s EMAs -> %s", market.Base, tf, strings.Join(summaryParts, ", ")))
+			// Display analysis results
+			ui.PrintAnalysisResults(analysis)
 
 			// Small pause between markets to be nice to exchanges
 			select {
@@ -479,6 +454,58 @@ func (a *App) processMarkets(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Final summary
+	ui.PrintSuccess(fmt.Sprintf("✨ Analysis completed! Processed %d markets across %d timeframes", processedMarkets, len(a.config.Timeframes)))
+
+	// Ask user about export
+	if len(allAnalyses) > 0 && a.askForExport() {
+		if err := a.exportResults(allAnalyses); err != nil {
+			ui.PrintError("Failed to export results", err)
+		}
+	}
+
+	return nil
+}
+
+// askForExport asks user if they want to export results
+func (a *App) askForExport() bool {
+	fmt.Println("\n💾 Export Results")
+	response := input.ReadLine(a.reader, "Export analysis results to file? (y/n, default: y): ")
+	if response == "" {
+		return true
+	}
+	normalized := input.Normalize(response)
+	return normalized == "y" || normalized == "yes"
+}
+
+// exportResults exports analysis results to files
+func (a *App) exportResults(analyses []indicators.MarketAnalysis) error {
+	exporter := export.NewExporter("")
+
+	exportConfig := export.ExportConfig{
+		EMAs:       a.config.Emas,
+		Timeframes: a.config.Timeframes,
+		Symbols:    a.config.Symbols,
+		SelectAll:  a.config.SelectAll,
+	}
+
+	// Export as JSON
+	jsonPath, err := exporter.ExportAnalysis(analyses, a.config.Exchange, a.config.MarketType, exportConfig, export.FormatJSON)
+	if err != nil {
+		return err
+	}
+	ui.PrintSuccess(fmt.Sprintf("JSON export saved: %s", jsonPath))
+
+	// Export as CSV
+	csvPath, err := exporter.ExportAnalysis(analyses, a.config.Exchange, a.config.MarketType, exportConfig, export.FormatCSV)
+	if err != nil {
+		ui.PrintWarning(fmt.Sprintf("CSV export failed: %v", err))
+	} else {
+		ui.PrintSuccess(fmt.Sprintf("CSV export saved: %s", csvPath))
+	}
+
+	ui.PrintInfo(fmt.Sprintf("📁 Export directory: %s", exporter.GetOutputDirectory()))
 
 	return nil
 }

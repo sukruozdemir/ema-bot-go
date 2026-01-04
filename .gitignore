@@ -4,23 +4,74 @@
 *.dll
 *.so
 *.dylib
+ema-bot
+ema-bot-*
+ema-bot-config
+
+# Build and distribution directories
+/build/
+/dist/
 
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
+coverage.html
+coverage.txt
+coverage.xml
 
-# Dependency directories (uncomment if using dep)
-# vendor/
+# Dependency directories
+/vendor/
 
 # Go workspace file
 go.work
 
-# IDE files
+# IDE and editor files
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS files
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Environment variables
+.env
+.env.local
+
+# Cache and temporary files
+/tmp/
+*.tmp
+*.cache
+
+# Profiling data
+*.prof
+cpu.prof
+mem.prof
+*.pprof
+
+# Configuration (user-specific)
+config.json
+*.local.json
+
+# Logs
+*.log
+logs/
+
+# Certificates and keys
+*.pem
+*.key
+*.cert
+
+# Backup files
+*.bak
+*.backup
+
+# Database files (if any)
+*.db
+*.sqlite
+*.sqlite3

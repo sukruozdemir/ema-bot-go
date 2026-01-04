@@ -11,8 +11,8 @@ import (
 )
 
 func main() {
-	// Initialize logger (NewNop() disables all logging)
-	logger := zap.NewNop()
+	// Initialize logger with development config for better debugging
+	logger, _ := zap.NewDevelopment()
 	defer func() {
 		if err := logger.Sync(); err != nil {
 			// Handle sync error if needed

@@ -3,10 +3,13 @@ package ui
 import (
 	"bufio"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/sukruozdemir/ema-bot-go/internal/config"
+	"github.com/sukruozdemir/ema-bot-go/internal/indicators"
 	"github.com/sukruozdemir/ema-bot-go/internal/input"
 )
 
@@ -20,19 +23,35 @@ const (
 	ColorCyan   = "\033[36m"
 	ColorWhite  = "\033[37m"
 	ColorBold   = "\033[1m"
+	ColorDim    = "\033[2m"
 )
+
+// Table represents a data table with formatting options
+type Table struct {
+	Headers []string
+	Rows    [][]string
+	Title   string
+}
+
+// ProgressBar represents a progress indicator
+type ProgressBar struct {
+	Total   int
+	Current int
+	Title   string
+}
 
 // PrintWelcome displays the application welcome message
 func PrintWelcome() {
 	welcome := fmt.Sprintf(`%s%s
 ╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
-║                🤖 EMA BOT v2.0 🤖                     ║
+║                🤖 EMA BOT v3.0 🤖                     ║
 ║           Professional Trading Analysis Tool          ║
+║              with Advanced Signal Detection           ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝%s
 
-%s💡 Tip: Use 'all' for symbols to analyze all available markets%s
+%s💡 New Features: Trend Analysis, Signal Detection, Export%s
 `, ColorBold, ColorCyan, ColorReset, ColorYellow, ColorReset)
 
 	fmt.Print(welcome)
@@ -135,6 +154,297 @@ func PrintMarketSummary(marketType string, total, filtered int) {
 }
 
 // Helper functions
+
+// PrintTable renders a formatted table with proper alignment
+func (t *Table) Print() {
+	if len(t.Rows) == 0 {
+		PrintWarning("No data to display in table")
+		return
+	}
+
+	// Calculate column widths
+	widths := make([]int, len(t.Headers))
+	for i, header := range t.Headers {
+		widths[i] = len(header)
+	}
+
+	for _, row := range t.Rows {
+		for i, cell := range row {
+			if i < len(widths) && len(stripAnsi(cell)) > widths[i] {
+				widths[i] = len(stripAnsi(cell))
+			}
+		}
+	}
+
+	// Print title if provided
+	if t.Title != "" {
+		fmt.Printf("\n%s%s%s%s\n", ColorBold, ColorCyan, t.Title, ColorReset)
+	}
+
+	// Print header separator
+	fmt.Print("┌")
+	for i, width := range widths {
+		fmt.Print(strings.Repeat("─", width+2))
+		if i < len(widths)-1 {
+			fmt.Print("┬")
+		}
+	}
+	fmt.Println("┐")
+
+	// Print headers
+	fmt.Print("│")
+	for i, header := range t.Headers {
+		fmt.Printf(" %s%-*s%s ", ColorBold, widths[i], header, ColorReset)
+		if i < len(widths)-1 {
+			fmt.Print("│")
+		}
+	}
+	fmt.Println("│")
+
+	// Print separator
+	fmt.Print("├")
+	for i, width := range widths {
+		fmt.Print(strings.Repeat("─", width+2))
+		if i < len(widths)-1 {
+			fmt.Print("┼")
+		}
+	}
+	fmt.Println("┤")
+
+	// Print rows
+	for _, row := range t.Rows {
+		fmt.Print("│")
+		for i, cell := range row {
+			if i < len(widths) {
+				padding := widths[i] - len(stripAnsi(cell))
+				fmt.Printf(" %s%s ", cell, strings.Repeat(" ", padding))
+				if i < len(widths)-1 {
+					fmt.Print("│")
+				}
+			}
+		}
+		fmt.Println("│")
+	}
+
+	// Print bottom separator
+	fmt.Print("└")
+	for i, width := range widths {
+		fmt.Print(strings.Repeat("─", width+2))
+		if i < len(widths)-1 {
+			fmt.Print("┴")
+		}
+	}
+	fmt.Println("┘")
+}
+
+// PrintAnalysisResults displays comprehensive EMA analysis in a formatted table
+func PrintAnalysisResults(analysis indicators.MarketAnalysis) {
+	// Main analysis table
+	table := &Table{
+		Title:   fmt.Sprintf("📊 EMA Analysis: %s (%s)", analysis.Symbol, analysis.Timeframe),
+		Headers: []string{"EMA", "Current", "Previous", "Change %", "Trend", "Strength"},
+	}
+
+	// Sort EMAs by period for consistent display
+	emas := make([]indicators.EMAAnalysis, len(analysis.EMAs))
+	copy(emas, analysis.EMAs)
+	sort.Slice(emas, func(i, j int) bool {
+		return emas[i].Period < emas[j].Period
+	})
+
+	for _, ema := range emas {
+		var currentStr, previousStr, changeStr, trendStr, strengthStr string
+
+		// Format current value
+		if !math.IsNaN(ema.CurrentValue) {
+			currentStr = fmt.Sprintf("%.4f", ema.CurrentValue)
+		} else {
+			currentStr = "N/A"
+		}
+
+		// Format previous value
+		if !math.IsNaN(ema.PreviousValue) {
+			previousStr = fmt.Sprintf("%.4f", ema.PreviousValue)
+		} else {
+			previousStr = "N/A"
+		}
+
+		// Format change with color
+		if ema.Change != 0 {
+			color := ColorGreen
+			symbol := "📈"
+			if ema.Change < 0 {
+				color = ColorRed
+				symbol = "📉"
+			}
+			changeStr = fmt.Sprintf("%s%s %.2f%%%s", color, symbol, ema.ChangePercent, ColorReset)
+		} else {
+			changeStr = "0.00%"
+		}
+
+		// Format trend with color and emoji
+		switch ema.Trend {
+		case indicators.TrendUp:
+			trendStr = fmt.Sprintf("%s🚀 %s%s", ColorGreen, ema.Trend.String(), ColorReset)
+		case indicators.TrendDown:
+			trendStr = fmt.Sprintf("%s🔻 %s%s", ColorRed, ema.Trend.String(), ColorReset)
+		default:
+			trendStr = fmt.Sprintf("%s⚡ %s%s", ColorYellow, ema.Trend.String(), ColorReset)
+		}
+
+		// Format strength as percentage
+		strengthStr = fmt.Sprintf("%.1f%%", ema.TrendStrength*100)
+
+		table.Rows = append(table.Rows, []string{
+			fmt.Sprintf("EMA %d", ema.Period),
+			currentStr,
+			previousStr,
+			changeStr,
+			trendStr,
+			strengthStr,
+		})
+	}
+
+	table.Print()
+
+	// Overall trend summary
+	trendEmoji := "⚡"
+	trendColor := ColorYellow
+	switch analysis.OverallTrend {
+	case indicators.TrendUp:
+		trendEmoji = "🚀"
+		trendColor = ColorGreen
+	case indicators.TrendDown:
+		trendEmoji = "🔻"
+		trendColor = ColorRed
+	}
+
+	fmt.Printf("\n%s%s Overall Trend: %s %s (Score: %.2f)%s\n",
+		ColorBold, trendColor, trendEmoji, analysis.OverallTrend.String(),
+		analysis.TrendScore, ColorReset)
+
+	// Print signals if any
+	if len(analysis.Signals) > 0 {
+		PrintSignals(analysis.Signals)
+	}
+}
+
+// PrintSignals displays crossover signals in a formatted table
+func PrintSignals(signals []indicators.CrossoverSignal) {
+	if len(signals) == 0 {
+		return
+	}
+
+	table := &Table{
+		Title:   "🎯 Trading Signals (Recent Crossovers)",
+		Headers: []string{"Type", "EMAs", "Bars Ago", "Strength", "Signal"},
+	}
+
+	for _, signal := range signals {
+		var signalColor, signalEmoji, signalText string
+
+		switch signal.SignalType {
+		case "golden_cross":
+			signalColor = ColorGreen
+			signalEmoji = "🌟"
+			signalText = "BUY"
+		case "death_cross":
+			signalColor = ColorRed
+			signalEmoji = "💀"
+			signalText = "SELL"
+		default:
+			signalColor = ColorYellow
+			signalEmoji = "⚡"
+			signalText = "WATCH"
+		}
+
+		strengthBar := createStrengthBar(signal.Strength)
+
+		table.Rows = append(table.Rows, []string{
+			fmt.Sprintf("%s%s%s", signalColor, strings.Title(strings.ReplaceAll(signal.SignalType, "_", " ")), ColorReset),
+			fmt.Sprintf("EMA %d/%d", signal.FastPeriod, signal.SlowPeriod),
+			fmt.Sprintf("%d", signal.CrossoverBar),
+			strengthBar,
+			fmt.Sprintf("%s%s %s%s", signalColor, signalEmoji, signalText, ColorReset),
+		})
+	}
+
+	table.Print()
+}
+
+// PrintProgressBar displays a progress bar
+func (p *ProgressBar) Print() {
+	if p.Total <= 0 {
+		return
+	}
+
+	percentage := float64(p.Current) / float64(p.Total) * 100
+	barWidth := 30
+	filledWidth := int(float64(barWidth) * float64(p.Current) / float64(p.Total))
+
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+
+	fmt.Printf("\r%s%s [%s%s%s] %d/%d (%.1f%%)%s",
+		ColorBlue, p.Title, ColorCyan, bar, ColorBlue, p.Current, p.Total, percentage, ColorReset)
+
+	if p.Current >= p.Total {
+		fmt.Println() // New line when complete
+	}
+}
+
+// PrintMarketProgress displays progress for market processing
+func PrintMarketProgress(symbol string, current, total int) {
+	progress := &ProgressBar{
+		Title:   fmt.Sprintf("📊 Processing %s", symbol),
+		Current: current,
+		Total:   total,
+	}
+	progress.Print()
+}
+
+// Helper functions
+
+// stripAnsi removes ANSI escape codes for length calculation
+func stripAnsi(s string) string {
+	// Simple ANSI escape sequence removal
+	result := strings.ReplaceAll(s, "\033[0m", "")
+	result = strings.ReplaceAll(result, "\033[1m", "")
+	result = strings.ReplaceAll(result, "\033[2m", "")
+
+	// Remove color codes (30-37, 40-47, 90-97, 100-107)
+	for i := 30; i <= 37; i++ {
+		result = strings.ReplaceAll(result, fmt.Sprintf("\033[%dm", i), "")
+	}
+	for i := 40; i <= 47; i++ {
+		result = strings.ReplaceAll(result, fmt.Sprintf("\033[%dm", i), "")
+	}
+	for i := 90; i <= 97; i++ {
+		result = strings.ReplaceAll(result, fmt.Sprintf("\033[%dm", i), "")
+	}
+	for i := 100; i <= 107; i++ {
+		result = strings.ReplaceAll(result, fmt.Sprintf("\033[%dm", i), "")
+	}
+
+	return result
+}
+
+// createStrengthBar creates a visual strength indicator
+func createStrengthBar(strength float64) string {
+	barLength := 10
+	filledLength := int(strength * float64(barLength))
+
+	var color string
+	if strength >= 0.7 {
+		color = ColorGreen
+	} else if strength >= 0.4 {
+		color = ColorYellow
+	} else {
+		color = ColorRed
+	}
+
+	bar := strings.Repeat("█", filledLength) + strings.Repeat("░", barLength-filledLength)
+	return fmt.Sprintf("%s%s%s %.0f%%", color, bar, ColorReset, strength*100)
+}
 
 func formatIntSlice(ints []int) string {
 	if len(ints) == 0 {
