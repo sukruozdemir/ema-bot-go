@@ -54,6 +54,107 @@ func NewExchangeService(exchangeName string, logger *zap.Logger) (*ExchangeServi
 	}, nil
 }
 
+// FetchOhlcvWithDataCount fetches historical OHLCV data for a market symbol with a lookback count.
+// It will iterate requests from earliest to latest until requestedCount candles are fetched
+// or until the current time is reached. Respects exchange rate limits and context cancellation.
+func (es *ExchangeService) FetchOhlcvWithDataCount(ctx context.Context, market models.Market, timeframe string, requestedCount int) ([][]float64, error) {
+	if es.exchange == nil {
+		return nil, errors.New(errors.ErrTypeExchange, "exchange not initialized")
+	}
+
+	if requestedCount <= 0 {
+		return nil, errors.New(errors.ErrTypeValidation, "requested data count must be > 0")
+	}
+
+	// parse timeframe via ccxt helper (may return interface{}) - expect numeric seconds
+	tfRaw := es.exchange.ParseTimeframe(timeframe)
+	var tfSecondsInt int64
+	switch v := tfRaw.(type) {
+	case int:
+		tfSecondsInt = int64(v)
+	case int64:
+		tfSecondsInt = v
+	case float64:
+		tfSecondsInt = int64(v)
+	default:
+		return nil, errors.New(errors.ErrTypeValidation, "invalid timeframe type returned by exchange")
+	}
+	if tfSecondsInt <= 0 {
+		return nil, errors.New(errors.ErrTypeValidation, "invalid timeframe")
+	}
+	timeframeMs := int64(tfSecondsInt) * 1000
+
+	symbolID := market.Symbol
+
+	nowMs := time.Now().UnixMilli()
+	startDate := nowMs - int64(requestedCount)*timeframeMs
+	endDate := nowMs
+
+	var allData [][]float64
+
+	es.logger.Info("Fetching OHLCV with lookback",
+		zap.String("symbol", symbolID),
+		zap.String("timeframe", timeframe),
+		zap.Int("requested_count", requestedCount))
+
+	for startDate < endDate {
+		select {
+		case <-ctx.Done():
+			return allData, ctx.Err()
+		default:
+		}
+
+		// ccxt fetch_ohlcv signature: FetchOHLCV(symbol, timeframe, since, limit)
+		// The binding returns a channel of interface{} - receive and convert
+		respCh := es.exchange.FetchOHLCV(symbolID, timeframe, startDate, nil)
+		var rawResp any
+		select {
+		case rawResp = <-respCh:
+		case <-ctx.Done():
+			return allData, ctx.Err()
+		}
+
+		ohlcvData, err := convertToFloatMatrix(rawResp)
+		if err != nil {
+			es.logger.Debug("Failed to convert OHLCV response", zap.Error(err))
+			return allData, errors.Wrap(errors.ErrTypeExchange, "failed to parse ohlcv response", err)
+		}
+
+		if len(ohlcvData) > 0 {
+			allData = append(allData, ohlcvData...)
+			// advance startDate to last timestamp + 1ms
+			last := ohlcvData[len(ohlcvData)-1]
+			if len(last) > 0 {
+				ts := int64(last[0])
+				startDate = ts + 1
+			} else {
+				startDate += timeframeMs
+			}
+
+			es.logger.Debug("Fetched OHLCV batch",
+				zap.Int("batch_count", len(ohlcvData)),
+				zap.Int("total_count", len(allData)))
+		} else {
+			// No data returned for this window, advance by one timeframe
+			startDate += timeframeMs
+		}
+
+		// apply a conservative default rate-limit sleep (ms)
+		sleepMs := 250 * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return allData, ctx.Err()
+		case <-time.After(sleepMs):
+		}
+	}
+
+	es.logger.Info("Completed OHLCV fetch",
+		zap.String("symbol", symbolID),
+		zap.Int("total_candles", len(allData)))
+
+	return allData, nil
+}
+
 // GetSpotMarkets fetches and filters spot markets, using cache if available
 func (es *ExchangeService) GetSpotMarkets(ctx context.Context) ([]models.Market, error) {
 	return es.getMarketsWithCache(ctx, "spot")
@@ -189,6 +290,17 @@ func (es *ExchangeService) convertToMarket(rawMarket map[string]any) (models.Mar
 	market.Contract = getBool("contract")
 	market.Linear = getBool("linear")
 	market.Inverse = getBool("inverse")
+
+	// Try to extract price precision from common CCXT fields
+	if val, exists := rawMarket["precision"]; exists {
+		if pm, ok := val.(map[string]any); ok {
+			if pval, ok := pm["price"].(int); ok {
+				market.PricePrecision = pval
+			} else if pvalf, ok := pm["price"].(float64); ok {
+				market.PricePrecision = int(pvalf)
+			}
+		}
+	}
 
 	// Validate required fields
 	if market.Symbol == "" || market.Base == "" || market.Quote == "" {
@@ -328,4 +440,47 @@ func (es *ExchangeService) ClearCache() error {
 // IsValidExchange checks if the exchange is valid and accessible
 func (es *ExchangeService) IsValidExchange() bool {
 	return es.exchange != nil
+}
+
+// convertToFloatMatrix attempts to convert various ccxt OHLCV responses to [][]float64
+func convertToFloatMatrix(raw interface{}) ([][]float64, error) {
+	// Common shapes: []interface{} where each entry is []interface{} of numbers
+	var out [][]float64
+
+	switch v := raw.(type) {
+	case [][]float64:
+		return v, nil
+	case []interface{}:
+		for _, row := range v {
+			switch r := row.(type) {
+			case []interface{}:
+				var nums []float64
+				for _, cell := range r {
+					switch c := cell.(type) {
+					case float64:
+						nums = append(nums, c)
+					case int:
+						nums = append(nums, float64(c))
+					case int64:
+						nums = append(nums, float64(c))
+					case json.Number:
+						f, err := r[0].(json.Number).Float64()
+						if err != nil {
+							return nil, err
+						}
+						nums = append(nums, f)
+					default:
+						// try to convert using fmt
+						return nil, fmt.Errorf("unsupported ohlcv cell type: %T", c)
+					}
+				}
+				out = append(out, nums)
+			default:
+				return nil, fmt.Errorf("unsupported ohlcv row type: %T", r)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported ohlcv response type: %T", v)
+	}
 }

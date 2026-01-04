@@ -4,19 +4,20 @@ import "time"
 
 // Market represents a trading market/pair
 type Market struct {
-	ID       string `json:"id"`
-	Symbol   string `json:"symbol"`
-	Base     string `json:"base"`
-	Quote    string `json:"quote"`
-	Active   bool   `json:"active"`
-	Type     string `json:"type"` // spot, swap, future, etc.
-	Spot     bool   `json:"spot"`
-	Swap     bool   `json:"swap"`
-	Future   bool   `json:"future"`
-	Option   bool   `json:"option"`
-	Contract bool   `json:"contract"`
-	Linear   bool   `json:"linear"`
-	Inverse  bool   `json:"inverse"`
+	ID             string `json:"id"`
+	Symbol         string `json:"symbol"`
+	Base           string `json:"base"`
+	Quote          string `json:"quote"`
+	Active         bool   `json:"active"`
+	Type           string `json:"type"` // spot, swap, future, etc.
+	Spot           bool   `json:"spot"`
+	Swap           bool   `json:"swap"`
+	Future         bool   `json:"future"`
+	Option         bool   `json:"option"`
+	Contract       bool   `json:"contract"`
+	Linear         bool   `json:"linear"`
+	Inverse        bool   `json:"inverse"`
+	PricePrecision int    `json:"price_precision,omitempty"`
 }
 
 // MarketCache represents cached market data

@@ -13,6 +13,9 @@ type ExchangeInterface interface {
 	GetSwapMarkets(ctx context.Context) ([]models.Market, error)
 	GetSelectedMarkets(symbols []string, markets []models.Market) []models.Market
 
+	// Historical data
+	FetchOhlcvWithDataCount(ctx context.Context, market models.Market, timeframe string, requestedCount int) ([][]float64, error)
+
 	// Cache management
 	ClearCache() error
 

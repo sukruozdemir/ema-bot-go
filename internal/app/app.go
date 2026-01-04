@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/sukruozdemir/ema-bot-go/internal/config"
 	"github.com/sukruozdemir/ema-bot-go/internal/errors"
+	"github.com/sukruozdemir/ema-bot-go/internal/indicators"
 	"github.com/sukruozdemir/ema-bot-go/internal/input"
 	"github.com/sukruozdemir/ema-bot-go/internal/models"
 	"github.com/sukruozdemir/ema-bot-go/internal/services"
@@ -381,6 +384,101 @@ func (a *App) processMarkets(ctx context.Context) error {
 	a.logger.Info("Markets processed successfully",
 		zap.Int("total_markets", totalMarkets),
 		zap.Int("filtered_markets", len(filteredMarkets)))
+
+	// Add a small buffer so we have some lookback beyond the period
+	requestedCount := 1000
+
+	// For each filtered market, fetch OHLCV for each timeframe and compute EMAs
+	for _, im := range filteredMarkets {
+		market, ok := im.(models.Market)
+		if !ok {
+			continue
+		}
+
+		for _, tf := range a.config.Timeframes {
+			// Respect context cancellation
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			a.logger.Info("Fetching market OHLCV",
+				zap.String("symbol", market.Symbol),
+				zap.String("timeframe", tf),
+				zap.Int("count", requestedCount))
+
+			ohlcv, err := a.exchangeService.FetchOhlcvWithDataCount(ctx, market, tf, requestedCount)
+			if err != nil {
+				a.logger.Error("Failed to fetch OHLCV", zap.String("symbol", market.Symbol), zap.String("timeframe", tf), zap.Error(err))
+				ui.PrintWarning(fmt.Sprintf("Skipping %s %s due to fetch error", market.Symbol, tf))
+				continue
+			}
+
+			// Extract close prices
+			closes := make([]float64, 0, len(ohlcv))
+			for _, row := range ohlcv {
+				if len(row) >= 5 {
+					closes = append(closes, row[4])
+				}
+			}
+
+			if len(closes) == 0 {
+				ui.PrintWarning(fmt.Sprintf("No close prices for %s %s", market.Symbol, tf))
+				continue
+			}
+
+			// Compute EMAs
+			emaMap := indicators.CalculateMultipleEMAs(closes, a.config.Emas)
+
+			// Prepare summary: latest valid EMA for each period
+			summaryParts := make([]string, 0, len(a.config.Emas))
+
+			// Decide precision: prefer market.PricePrecision if available
+			precision := market.PricePrecision
+			latestClose := closes[len(closes)-1]
+			if precision <= 0 {
+				switch {
+				case latestClose >= 1000:
+					precision = 2
+				case latestClose >= 100:
+					precision = 2
+				case latestClose >= 1:
+					precision = 4
+				case latestClose > 0:
+					precision = 6
+				default:
+					precision = 6
+				}
+			}
+			for _, p := range a.config.Emas {
+				emaSeries := emaMap[p]
+				// Find last non-NaN value
+				var latest float64 = math.NaN()
+				for i := len(emaSeries) - 1; i >= 0; i-- {
+					if !math.IsNaN(emaSeries[i]) {
+						latest = emaSeries[i]
+						break
+					}
+				}
+				if math.IsNaN(latest) {
+					summaryParts = append(summaryParts, fmt.Sprintf("%d: n/a", p))
+				} else {
+					valueStr := fmt.Sprintf("%.*f", precision, latest)
+					// Trim trailing zeros and trailing dot
+					valueStr = strings.TrimRight(strings.TrimRight(valueStr, "0"), ".")
+					summaryParts = append(summaryParts, fmt.Sprintf("%d: %s", p, valueStr))
+				}
+			}
+
+			ui.PrintInfo(fmt.Sprintf("%s %s EMAs -> %s", market.Base, tf, strings.Join(summaryParts, ", ")))
+
+			// Small pause between markets to be nice to exchanges
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
 
 	return nil
 }
