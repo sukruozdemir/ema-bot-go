@@ -53,7 +53,7 @@ func (a *App) Start(ctx context.Context) error {
 	ui.PrintWelcome()
 
 	// Load or create configuration
-	if err := a.loadOrCreateConfig(ctx); err != nil {
+	if err := a.loadOrCreateConfig(); err != nil {
 		ui.PrintError("Failed to load configuration", err)
 		return err
 	}
@@ -84,7 +84,7 @@ func (a *App) Start(ctx context.Context) error {
 }
 
 // loadOrCreateConfig attempts to load saved config or creates a new one interactively
-func (a *App) loadOrCreateConfig(ctx context.Context) error {
+func (a *App) loadOrCreateConfig() error {
 	cfg, err := config.Load()
 	if err == nil && a.confirmUseExistingConfig(cfg) {
 		a.config = cfg
